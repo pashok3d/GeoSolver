@@ -1,0 +1,12 @@
+[project]
+name = "geosolver"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "lightning>=2.5.2",
+    "pillow>=11.3.0",
+    "transformers>=4.53.0",
+    "wandb>=0.20.1",
+]
