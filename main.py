@@ -4,13 +4,13 @@ from typing import List, Union
 import lightning as L
 import torch
 import torch.nn.functional as F
-from lightning.pytorch.loggers import WandbLogger
-from PIL import Image
-from pytorch_lightning.callbacks import (
+from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
 )
+from lightning.pytorch.loggers import WandbLogger
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessorFast, CLIPModel
 
@@ -184,6 +184,7 @@ class GeoModel(L.LightningModule):
         """
         super().__init__()
         self.learning_rate = learning_rate
+        self.temperature = temperature
         self.model = CLIPModel.from_pretrained("geolocal/StreetCLIP")
 
         # Save hyperparameters
@@ -246,8 +247,6 @@ L.seed_everything(42)
 model = GeoModel(learning_rate=1e-4, temperature=0.07)
 wandb_logger = WandbLogger(project="geosolver", log_model=False)
 
-trainer = L.Trainer(limit_train_batches=10, max_epochs=1, logger=wandb_logger)
-
 # Initialize callbacks
 callbacks = [
     ModelCheckpoint(
@@ -268,9 +267,11 @@ trainer = L.Trainer(
     max_epochs=1,
     logger=wandb_logger,
     callbacks=callbacks,
-    accelerator="auto",  # Automatically use GPU if available
+    gradient_clip_val=1.0,  # Gradient clipping for stability
+    accelerator="auto",
     devices=1,
-    precision="16-mixed",  # Use mixed precision for faster training
+    precision="16-mixed",
+    detect_anomaly=False,
 )
 
 # Initialize data module
