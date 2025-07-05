@@ -15,6 +15,71 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessorFast, CLIPModel
 
 
+class CoSENTLoss(torch.nn.Module):
+    """
+    CoSENT loss adapted for geographic similarity learning.
+    """
+
+    def __init__(self, scale: float = 20.0):
+        """
+        Args:
+            scale: Scaling factor for cosine similarities (equivalent to 1/temperature)
+        """
+        super().__init__()
+        self.scale = scale
+
+    def forward(
+        self,
+        embeddings1: torch.Tensor,
+        embeddings2: torch.Tensor,
+        distances: torch.Tensor,
+    ):
+        """
+        Compute CoSENT loss for pairs of embeddings.
+
+        Args:
+            embeddings1: Batch of first embeddings [batch_size, embedding_dim]
+            embeddings2: Batch of second embeddings [batch_size, embedding_dim]
+            distances: Geographic distances for each pair [batch_size]
+
+        Returns:
+            Scalar loss value
+        """
+        # Normalize embeddings
+        embeddings1 = F.normalize(embeddings1, p=2, dim=1)
+        embeddings2 = F.normalize(embeddings2, p=2, dim=1)
+
+        # Compute cosine similarities for each pair
+        # similarities[i] = cos(embed1[i], embed2[i])
+        similarities = (embeddings1 * embeddings2).sum(dim=1)
+
+        # Scale similarities
+        similarities = similarities * self.scale
+
+        # Create similarity difference matrix
+        # sim_diff[i,j] = similarity[i] - similarity[j]
+        sim_diff = similarities[:, None] - similarities[None, :]
+
+        # Create label matrix based on distances
+        # labels[i,j] = 1 if distance[i] < distance[j], else 0
+        # This means pair i should have higher similarity than pair j
+        labels = distances[:, None] < distances[None, :]
+        labels = labels.float()
+
+        # Mask out irrelevant pairs (where distance[i] >= distance[j])
+        # We only want to penalize cases where a far pair has higher similarity than a close pair
+        sim_diff = sim_diff - (1 - labels) * 1e12
+
+        # Flatten and add zero for numerical stability
+        sim_diff = sim_diff.view(-1)
+        sim_diff = torch.cat([torch.zeros(1, device=sim_diff.device), sim_diff])
+
+        # Compute log-sum-exp
+        loss = torch.logsumexp(sim_diff, dim=0)
+
+        return loss
+
+
 class GeoDataset(Dataset):
     SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
@@ -75,40 +140,6 @@ class GeoDataset(Dataset):
 
         return image_paths
 
-    def __len__(self) -> int:
-        """Return the number of images in the dataset."""
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int):
-        """
-        Get a preprocessed image by index.
-
-        Args:
-            idx: Index of the image to retrieve
-
-        Returns:
-            Preprocessed image tensor with shape (C, H, W)
-        """
-        if idx < 0 or idx >= len(self.image_paths):
-            raise IndexError(
-                f"Index {idx} out of range for dataset of size {len(self)}"
-            )
-
-        image_path = self.image_paths[idx]
-
-        try:
-            # Load and convert image
-            image = Image.open(image_path).convert("RGB")
-
-            # Process image
-            inputs = self.processor(images=image, return_tensors="pt")
-
-            # Return tensor without batch dimension
-            return inputs.pixel_values.squeeze(0)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to load image {image_path}: {str(e)}")
-
     def get_image_path(self, idx: int) -> Path:
         """Get the file path for an image by index."""
         if idx < 0 or idx >= len(self.image_paths):
@@ -116,6 +147,57 @@ class GeoDataset(Dataset):
                 f"Index {idx} out of range for dataset of size {len(self)}"
             )
         return self.image_paths[idx]
+
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+    def __getitem__(self, idx: int):
+        """
+        Return a pair of images and their geographic distance.
+
+        Returns:
+            dict containing:
+                - 'image1': First image tensor
+                - 'image2': Second image tensor
+                - 'distance': Geographic distance in kilometers
+        """
+        # Use idx as seed for reproducible random pairs
+        random.seed(idx)
+
+        # Select two different images
+        n_images = len(self.image_paths)
+        idx1 = random.randint(0, n_images - 1)
+        idx2 = random.randint(0, n_images - 1)
+        while idx2 == idx1:
+            idx2 = random.randint(0, n_images - 1)
+
+        # Load images
+        path1 = self.image_paths[idx1]
+        path2 = self.image_paths[idx2]
+
+        image1 = Image.open(path1).convert("RGB")
+        image2 = Image.open(path2).convert("RGB")
+
+        # Process images using CLIP processor
+        processed1 = self.processor(images=image1, return_tensors="pt")[
+            "pixel_values"
+        ].squeeze(0)
+        processed2 = self.processor(images=image2, return_tensors="pt")[
+            "pixel_values"
+        ].squeeze(0)
+
+        # Extract GPS coordinates from filenames
+        lat1, lon1 = ...
+        lat2, lon2 = ...
+
+        # Calculate distance
+        distance = haversine_distance(lat1, lon1, lat2, lon2)
+
+        return {
+            "image1": processed1,
+            "image2": processed2,
+            "distance": torch.tensor(distance, dtype=torch.float32),
+        }
 
 
 class GeoDataModule(L.LightningDataModule):
@@ -186,55 +268,53 @@ class GeoModel(L.LightningModule):
         self.learning_rate = learning_rate
         self.temperature = temperature
         self.model = CLIPModel.from_pretrained("geolocal/StreetCLIP")
+        self.loss_fn = CoSENTLoss()
 
         # Save hyperparameters
         self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
-        pixel_values = batch
+        """
+        Training step for geographic similarity learning.
 
-        # Get image embeddings
-        image_features = self.model.get_image_features(pixel_values)
+        Args:
+            batch: Dictionary containing 'image1', 'image2', and 'distance'
+            batch_idx: Index of the current batch
 
-        # Normalize features for cosine similarity
-        image_features = F.normalize(image_features, p=2, dim=1)
+        Returns:
+            Loss value
+        """
+        # Extract images and distances from batch
+        images1 = batch["image1"]
+        images2 = batch["image2"]
+        distances = batch["distance"]
 
-        # Simple contrastive loss within batch (SimCLR-style)
-        # This treats each image as its own class
-        batch_size = image_features.shape[0]
+        # Get image embeddings using CLIP's vision encoder
+        # Note: get_image_features returns normalized embeddings by default
+        embeddings1 = self.model.get_image_features(images1)
+        embeddings2 = self.model.get_image_features(images2)
 
-        # Compute similarity matrix
-        similarity_matrix = (
-            torch.matmul(image_features, image_features.T) / self.temperature
-        )
+        # Compute CoSENT loss
+        loss = self.loss_fn(embeddings1, embeddings2, distances)
 
-        # Create labels (each image is its own class)
-        labels = torch.arange(batch_size, device=self.device)
-
-        loss = F.cross_entropy(similarity_matrix, labels)
-
+        # Log metrics
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        pixel_values = batch
+        """Validation step - same as training but without gradient computation."""
+        images1 = batch["image1"]
+        images2 = batch["image2"]
+        distances = batch["distance"]
 
-        # Get image embeddings
-        image_features = self.model.get_image_features(pixel_values)
+        embeddings1 = self.model.get_image_features(images1)
+        embeddings2 = self.model.get_image_features(images2)
 
-        # Normalize features
-        image_features = F.normalize(image_features, p=2, dim=1)
+        loss = self.loss_fn(embeddings1, embeddings2, distances)
 
-        # Same loss as training
-        batch_size = image_features.shape[0]
-        similarity_matrix = (
-            torch.matmul(image_features, image_features.T) / self.temperature
-        )
-        labels = torch.arange(batch_size, device=self.device)
-        loss = F.cross_entropy(similarity_matrix, labels)
-
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+        # Log validation metrics
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
 
         return loss
 
@@ -270,7 +350,7 @@ trainer = L.Trainer(
     gradient_clip_val=1.0,  # Gradient clipping for stability
     accelerator="auto",
     devices=1,
-    precision="16-mixed",
+    precision="16-mixed" if torch.cuda.is_available() else 32,
     detect_anomaly=False,
 )
 
