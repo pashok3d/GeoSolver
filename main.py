@@ -22,21 +22,21 @@ class ComparisonCoSENTLoss(torch.nn.Module):
 
     Each unit contains a close pair (should be similar) and a far pair (should be dissimilar).
     Loss encourages similarity(close_pair) > similarity(far_pair).
+
+    Note: Distances are not needed as the ordering is implicit in the data structure.
     """
 
     def __init__(self, scale: float = 20.0):
         super().__init__()
         self.scale = scale
 
-    def forward(self, embeddings: torch.Tensor, distances: torch.Tensor):
+    def forward(self, embeddings: torch.Tensor):
         """
         Compute loss for comparison units.
 
         Args:
             embeddings: Embeddings [batch_size, 4, embedding_dim]
                        Order: [close_img1, close_img2, far_img1, far_img2]
-            distances: Distances [batch_size, 2]
-                      Order: [close_distance, far_distance]
 
         Returns:
             Scalar loss value
@@ -290,19 +290,7 @@ class ComparisonDataset(Dataset):
 
         # Stack images
         images_tensor = torch.stack(images)  # [4, 3, H, W]
-
-        # Calculate distances
-        close_coords1 = parse_gps_from_filename(self.image_paths[indices[0]].name)
-        close_coords2 = parse_gps_from_filename(self.image_paths[indices[1]].name)
-        far_coords1 = parse_gps_from_filename(self.image_paths[indices[2]].name)
-        far_coords2 = parse_gps_from_filename(self.image_paths[indices[3]].name)
-
-        close_distance = geodesic(*close_coords1, *close_coords2).kilometers
-        far_distance = geodesic(*far_coords1, *far_coords2).kilometers
-
-        distances = torch.tensor([close_distance, far_distance], dtype=torch.float32)
-
-        return {"images": images_tensor, "distances": distances}
+        return {"images": images_tensor}
 
 
 class GeoDataset(Dataset):
@@ -434,7 +422,6 @@ class GeoModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         """Training step with comparison units."""
         images = batch["images"]  # [batch_size, 4, 3, H, W]
-        distances = batch["distances"]  # [batch_size, 2]
 
         # Reshape for efficient processing
         batch_size = images.shape[0]
@@ -451,7 +438,7 @@ class GeoModel(L.LightningModule):
         embeddings = embeddings_flat.view(batch_size, 4, -1)
 
         # Compute loss
-        loss = self.loss_fn(embeddings, distances)
+        loss = self.loss_fn(embeddings)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
