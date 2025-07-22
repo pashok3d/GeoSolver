@@ -64,7 +64,7 @@ $$\text{Geoscore} = 5000 \cdot \exp\left(-\frac{\delta}{1492.7}\right)$$
 , where δ is Haversine distance between the predicted and the actual location in kilometers. The metric is designed to be similar to the one used in GeoGuessr, where the maximum score is 5000 and the minimum is 0.
 
 ### Dataset
-I want to gather a very high-quality dataset for evaluation. Dataset should cover the whole planet and be diverse in terms of different geo features. 
+I want to gather a small but representative dataset that will be used to run K-NN during the evaluation. Dataset should cover the whole planet and be diverse in terms of different geo features. 
 
 For each lon/lat cell, take all the images within the cell, embed the images and cluster embeddings. Sample from each cluster in a round-robin fashion until the desired number of images is reached. This way we get a balance between global coverage and local diversity.
 
@@ -72,3 +72,17 @@ For each lon/lat cell, take all the images within the cell, embed the images and
 > Note: the example above illustrates the diversity of the land cover type, but clustering of embeddings can provide many more “geo feature” dimensions, assuming we use an embedding model that was already fine-tuned for geo location (e.g. StreetCLIP).
 
 UPD: If the number of images witin a cell is huge and dataset has useful geo features, then we can first split the cell into groups based on the combination (product) of geo features. For example, if we have a cell with 1000 images, we can split it into groups, where each group has a different combination (product) of geo features (e.g. land cover type, climate, soil type, etc.). Then, if the number of images in a group is still big enough we can use clustering for images within each group.
+
+There are 23007 unique combinations of `cell`, `land_cover`, `climate`, and `soil` present in `osv5m/test` dataset with at least one image associated with them. The number of images in each group varies, and the distribution is as follows:
+| Number of images in group | Group count |
+|---------------------------|-------|
+| 1                         | 6197  |
+| 2-3                       | 5585  |
+| 4-10                      | 5962  |
+| 11-20                     | 2551  |
+| 21-50                     | 2017  |
+| 51-100                    | 587   |
+| 101-150                   | 96    |
+| >150                      | 12    |
+
+This table shows the distribution of the number of images for each unique combination of `cell`, `land_cover`, `climate`, and `soil` present in `osv5m/test` dataset. For example, the first row indicates that there are 6197 unique combinations of these features that have 1 image associated with them. The last row shows that there are 12 combinations with more than 150 images.
