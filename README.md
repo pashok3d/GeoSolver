@@ -55,3 +55,18 @@ What would be the mean of the cos similarity between uniformly distributed embed
 > When vectors are uniformly distributed on a unit hypersphere in d-dimensional space, the expected dot product (which equals cosine similarity for unit vectors) is: $E[cos(θ)] = E[u · v] = 0$
 
 In reality, the average is around 0.7 for both CLIP and fine-tuned StreetCLIP. But does it give us any useful information? Higher average doesn’t mean that model is good, as **dimensional collapse** or the **cone effect** may be present.
+
+## Evaluation
+
+### Metric
+Evaluation metric is 
+$$\text{Geoscore} = 5000 \cdot \exp\left(-\frac{\delta}{1492.7}\right)$$
+, where δ is Haversine distance between the predicted and the actual location in kilometers. The metric is designed to be similar to the one used in GeoGuessr, where the maximum score is 5000 and the minimum is 0.
+
+### Dataset
+I want to gather a very high-quality dataset for evaluation. Dataset should cover the whole planet and be diverse in terms of different geo features. 
+
+For each lon/lat cell, take all the images within the cell, embed the images and cluster embeddings. Sample from each cluster in a round-robin fashion until the desired number of images is reached. This way we get a balance between global coverage and local diversity.
+
+> Clarification on the local diversity: Imagine a lon/lat cell somewhere in Syberia where 99% percent of cell’s area is a forest and 1% is a water. Both in random and uniform sampling across the cell’s area we might get forest images exclusively, thus missing the whole type of land cover, which lowers the representativeness of the final dataset. When using the clustering of images embeddings, I expect forest images and water images to be in a separate clusters, each used for sampling.  
+> Note: the example above illustrates the diversity of the land cover type, but clustering of embeddings can provide many more “geo feature” dimensions, assuming we use an embedding model that was already fine-tuned for geo location (e.g. StreetCLIP).
